@@ -103,16 +103,85 @@ disassembly of each `p_dua_*Req` function:
 | DUASM_UNITSET | 8 | p_dua1sm_UnitSet |
 | DUASM_UNITGET | 9 | p_dua1sm_UnitGet |
 
-## response format
+## response format (confirmed on hardware 2026-03-29)
 
-responses are sent back via `dua_send_message()`, which calls
-`coma_create_message(2, 2, NULL, 0, buf, len)` — service_id=2, msg_type=2.
+responses use the same `struct dua_msg` layout:
 
-the response is prepared by `dua_prep_sendmsg()` which builds a response buffer
-with the original sender_id, a result code, and optional string data.
+```c
+struct dua_response {
+    uint32_t sender_id;   // echoed from request (used for correlation!)
+    uint32_t flags;       // always 0
+    uint32_t cmd;         // 0x81 = sync response, 0x7f = async callback
+    uint32_t num_params;  // 1 = error, 2+ = success
+    uint32_t params[];
+    // followed by null-terminated string (name for enum, empty otherwise)
+};
+```
 
-async callbacks go through `dua_send_cbk()` / `dua_send_unit_cbk()` for events
-like connection state changes, DTMF detection, etc.
+### sync responses (cmd=0x81)
+- `sender_id` matches the request — used to correlate responses to requests
+- `num_params=1, params[0] < 0` means DUA error (see `enum dua_error`)
+- `num_params >= 1, params[0] >= 0` means success
+- for EnumUT/EnumUE: params contain index + id, followed by name string
+
+### async callbacks (cmd=0x7f)
+- `sender_id=0`
+- `params[0]` = callback reference (e.g. 0xDEADBEEF from InitReq)
+- these arrive unsolicited and must be drained to get to sync responses
+- a burst of async callbacks follows InitReq (one per FXS/VOIP port)
+
+## initialization sequence (confirmed on hardware)
+
+**CRITICAL: the following steps must be performed in order or the CSS will panic.**
+
+### phase 1: DUA transport setup
+1. open `/dev/sharedmem` and call `ioctl(fd, 0xc0045302, params)`
+   - this sends `CMSG_SHAREDMEM_INIT` to CSS, which sets up its MMU mapping
+   - returns physical address and size of shared memory region
+2. `mmap()` the shared memory, zero it, set header:
+   - `*(shm+4) = size`
+   - `*(shm+8) = 0x30` (offset)
+3. connect AF_COMA socket to "dua" (this registers the DUA service on the CSS)
+4. send `DUA_CMD_INIT_REQ` (cmd 0x01) with 5 params:
+   - params = {5, 0xffffffff, 0xffffffff, 0xdeadbeef, shm_ptr}
+   - the CSS uses the shared memory pointer for DUA data structures
+5. send `DUA_CMD_APPL_INIT` (cmd 0x13)
+6. DUA is now ready for unit operations
+
+### phase 2: unit setup (stock lib_dua_init at 0x0001e538 in libcordless.so)
+
+per FXS unit (×8, in order):
+1. `UnitAllocateReq(type=2, spec=i)`
+2. `UnitSetReq(uid, elem=-2, 0x10100=UMT_EXEC_GEN, mode=1, 0)`
+   **← CRITICAL: creates DSP pipeline + FIFOs needed for TDM**
+   mode 1 bytecode at 0x0203581F (_css.elf genModes[1] for FXS type)
+3. `UnitSetReq(uid, elem=0x13, 0x100FF=USM_DO, dtmf_config, 12)`
+4. `UnitSetReq(uid, elem=0x3b, 0x100FF=USM_DO, 1, 0)`
+5. `UnitConnectReq(uid, -3)`
+6. `UnitSetReq(uid, elem=-1, 0x1010A=CBK_FUNC, callback_ptr, 0)`
+
+per VOIP unit (×16):
+1. `UnitAllocateReq(type=0, spec=i)`
+2. `UnitConnectReq(voip_uid, fxs_conn_id)`
+
+### phase 3: TDM setup (stock dua_set_fxs_tdm at 0x0001ef9c)
+1. `UnitSetReq(fxs_uid, elem=-2, 0x10103=UMT_IMMEDIATE, tdm_blob, 268)`
+2. write "1" to `/proc/gs/css_own_tdm0` → triggers COMA TDM grant
+
+skipping steps 1-4 of phase 1 causes CSS panic because the DUA handler dereferences
+uninitialized shared memory pointers. skipping phase 2 step 2 causes TDM assignment
+to write to nonexistent FIFOs.
+
+discovered by tracing `app_dsp` main() → `FUN_00018a18` (sharedmem init) →
+`FUN_000155d0` (duasync_init) → `FUN_00015744` (DUA InitReq with 0xdeadbeef).
+phase 2/3 decoded 2026-03-31 from ghidra analysis of libcordless.so + _css.elf.
+
+## COMA socket quirk
+
+the kernel's COMA socket returns `EOPNOTSUPP` (errno 95) on plain `recv()`
+but works correctly with `recvmsg()`. this appears to be a bug in the socket
+layer where the `MSG_OOB` flag check in `coma_sock_recvmsg` triggers incorrectly
+for `recv()` but not `recvmsg()`. always use `recvmsg()`.
 
 ## special parameter: DUA_PARAM_CBK_FUNC
 

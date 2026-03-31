@@ -131,19 +131,42 @@ END
 
 basic FXS port initialization.
 
-### mode 1 — "FXS config A"
+### mode 1 — "FXS DSP pipeline setup" (CRITICAL for TDM!)
+
+bytecode at 0x0203581F, decoded 2026-03-31:
 
 ```
-op26(elem=0, 0x0044)       — specialized FXS operation
-END
+op26(elem=0, p0=0x0044, p1=0, p2=2)  — DSP element setup, instance 68
+op26(elem=1, p0=0x004A, p1=0, p2=2)  — DSP element setup, instance 74
+op26(elem=2, p0=0x0050, p1=0, p2=2)  — DSP element setup, instance 80
+op26(elem=3, p0=0x0056, p1=0, p2=2)  — DSP element setup, instance 86
+op26(elem=4, p0=0x005C, p1=0, p2=2)  — DSP element setup, instance 92
+op26(elem=5, p0=0x0062, p1=0, p2=2)  — DSP element setup, instance 98
+op26(elem=6, p0=0x0068, p1=0, p2=2)  — DSP element setup, instance 104
+op26(elem=7, p0=0x006E, p1=0, p2=2)  — DSP element setup, instance 110
+op10(elem=62, p0=0xA004, p1=0x800)   — configure DSP resource
+op10(elem=62, p0=0xA00C, p1=0x800)   — configure DSP resource
+op9(elem=43, p0=20)                  — set param
+... (more op9/op10 instructions)
 ```
 
-minimal reconfiguration.
+8× opcode 26 instructions with elems 0-7 create per-channel DSP elements.
+the instance IDs (68, 74, 80, ...) step by 6 — likely creating the per-channel
+FIFOs and tone generators. **these FIFOs are what TDM assignment maps timeslots
+to (0x080d, 0x0810, etc.).** without running mode 1, UMT_IMMEDIATE TDM bytecode
+is accepted but the FIFOs it references don't exist.
+
+stock lib_dua_init() calls this as `UnitSetReq(uid, elem=-2, 0x10100, mode=1, 0)`
+on EVERY FXS unit before sending TDM assignment.
+
+opcode 26 param types: [u16, u16, u16, none] = 8 bytes per instruction.
+opcode 10 param types: [u16, u32, none, none] = 8 bytes per instruction.
+opcode 9 param types: [u16, none, none, none] = 4 bytes per instruction.
 
 ### mode 2 — "FXS config B"
 
 ```
-op26(elem=0, 0x0044)       — same as mode 1
+op26(elem=0, 0x0044)       — similar to mode 1
 END
 ```
 
