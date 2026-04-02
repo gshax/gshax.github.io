@@ -3,24 +3,37 @@
 ## high-level flow
 
 ```
-analog phone ←→ SLIC chip
+analog phone ←→ SLIC chip                         ← TAPI ioctls (tapi_slic_control.md)
                    ↕
-              TDM bus (hardware)
+              TDM bus (hardware)                   ← tdm_grant activates (tdm_grant_investigation.md)
                    ↕ tdm_read_sample() / tdm_write_sample()
-              optimized_tdm_handler()
+              optimized_tdm_handler()              ← CSS level 0 ISR context
                    ↕ p_da_DSPFifoWrite() / p_da_DSPFifoRead()
-              DSP FIFOs
+              DSP FIFOs                            ← created by FXS UMT mode 1 (umt_modes.md)
                    ↕
-              DUA audio routing (ART - audio routing table)
+              DUA audio routing (ART)              ← RouteCODEC activates this (module_readiness_cascade.md)
                    ↕ signal blocks, codec pipeline
+              CSS level 0 dispatch                 ← dfl_process_flow @ 0x020126e4 (css_level0_dispatch.md)
+                   ↕ (for L16: CSS does all data movement, ARM codec funcs are noops)
               VoIP DSP pipeline (SPVOIPNDA unit)
                    ↕
-              COMA voice service
-                   ↕ encoder/decoder CFIFOs
-              /dev/voiceXX on Linux
+              COMA voice service                   ← voice_service_and_app_dsp.md
+                   ↕ encoder/decoder CFIFOs (20KB each, DMA-coherent)
+              /dev/voiceXX on Linux                ← kernel coma-voice.c chardev
                    ↕
-              RTP stack (gs_ata)
+              RTP stack (gs_ata / our code)
 ```
+
+**critical dependencies for audio to flow:**
+1. FXS UMT mode 1 must create DSP FIFOs (resolved 2026-03-31)
+2. BGSC must populate element descriptors so CSS level 0 knows how to route
+3. module readiness cascade must complete and trigger RouteCODEC
+4. RouteCODEC sets DRT global flags enabling TDM→encoder connection
+5. voice session must be started (SETCODEC ioctl on /dev/voiceN)
+
+see [module_readiness_cascade.md](module_readiness_cascade.md) for the cascade
+chain and [codec_table_investigation.md](codec_table_investigation.md) for the
+element descriptor registration requirements.
 
 ## TDM layer (bottom)
 
@@ -129,12 +142,28 @@ FXS unit state machine handler. processes events for UIDs 0x0200-0x0207:
 ## voice service (COMA, top of CSS stack)
 
 CSS-side functions:
-- `voice_process_message()` — handles incoming voice cmsg from linux
+- `voice_process_message()` @ 0x0229ffbc — dispatches incoming voice cmsg
+- `voice_start_session()` @ 0x022a0cc4 — routes to rtp/t38/aec handlers
+- `voice_start_rtp()` @ 0x022a0a58 — fills RTP_DATA, calls p_rtpapp_Start
 - `voice_get_session()` / `voice_free_session()` — session lifecycle
-- `voice_set_session_*()` — FIFO and RTP configuration
-- `voice_session_process()` — per-session frame processing
+- `voice_set_session_fifos()` — maps CFIFO physical addresses via MMU
 - `voice_send_dtmf()` / `voice_send_evt()` — in-band events
 - `create_voice_message()` — builds response messages
 
-the voice service manages encoder/decoder CFIFOs that carry compressed audio
+the voice service manages encoder/decoder CFIFOs that carry codec-encoded audio
 frames between the CSS DSP and the linux kernel's /dev/voiceXX devices.
+
+**critical**: the START_SESSION reply is NOT sent synchronously. the full
+chain is documented in [voice_service_and_app_dsp.md](voice_service_and_app_dsp.md):
+p_rtpapp_Start → p_rtpapp_unit_mode_set (async DUA) → callback →
+p_rtpapp_start_enc_dec → p_rtpapp_ENCDECstart (AUC alloc) → BGSC start →
+p_rtpapp_SetSesionStatus (sends reply). this requires ARM-side BGSC threads
+to be running. without BGSC, this chain stalls at AUCChannelPairStart.
+
+ALL codecs including L16 go through AUC channel allocation. there is NO
+passthrough/bypass path. the CSS is compiled with -DDSPonARMonly=1, meaning
+all codec encode/decode runs on the ARM in app_dsp's BGSC threads. however,
+for L16 specifically, the ARM codec functions are **pure no-ops** — all actual
+audio data movement happens on the CSS in level 0 dispatch. the ARM just needs
+to maintain BGSC infrastructure (ring buffer messages, control word protocol,
+element descriptor registration). see [bgsc_shared_memory.md](bgsc_shared_memory.md).

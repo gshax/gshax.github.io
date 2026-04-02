@@ -1,6 +1,18 @@
 # TDM grant investigation (2026-03-31, latest update)
 
-## status: root cause identified — missing DSP pipeline setup
+## status: RESOLVED — audio working after full reboot
+
+**this investigation is complete.** the root cause was missing FXS UMT mode 1,
+which creates the DSP FIFOs that TDM assignment maps timeslots to. the fix is
+in libcomatose. remaining issue: TDM grant only works after full device reboot
+(not css_reset alone) due to stock kernel's BUG_ON in the NACK handler.
+
+the current blocker has moved to the BGSC layer — see
+[bgsc_shared_memory.md](bgsc_shared_memory.md) and
+[codec_table_investigation.md](codec_table_investigation.md) for the audio
+silence investigation.
+
+## original investigation: root cause — missing DSP pipeline setup
 
 **update 2026-03-31:** we traced through the CSS firmware dispatch chain and
 compared the stock `lib_dua_init()` sequence against libcomatose. the bytecodes

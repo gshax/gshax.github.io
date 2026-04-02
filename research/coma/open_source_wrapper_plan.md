@@ -1,5 +1,11 @@
 # open source libcordless replacement — feasibility notes
 
+**status:** this was the original feasibility assessment. most unknowns are now
+resolved and the library (`libcomatose`) exists. the proposed call sequence in
+"minimal call sequence" is broadly correct but omits the BGSC requirement — the
+voice service path REQUIRES arm-side BGSC infrastructure running (even for L16).
+see [voice_service_and_app_dsp.md](voice_service_and_app_dsp.md) for why.
+
 ## goal
 
 bypass the native SIP stack entirely and get PCM audio frames in/out of the
@@ -80,30 +86,28 @@ the linux kernel fork (GPL release) provides:
 ## remaining unknowns (need further RE or hardware testing)
 
 ### critical
-- [x] ~~exact command IDs for ConnCreate, UnitConnect, UnitDisconnect, ConnDelete~~ DONE
-      ConnCreate=0x06, ConnDelete=0x07, UnitConnect=0x04, UnitDisconnect=0x05,
-      ConnMerge=0x08, ConnUnmerge=0x09
-- [x] ~~UnitSetReq parameter IDs~~ DONE — full DUA_PARAM table extracted (43 params)
-- [ ] what UMT mode values are available for UT_SPVOIPNDA and UT_FXS
-      (UMT_EXEC_GEN with mode=N selects a predefined DSP pipeline — need to
-      enumerate what mode values exist and what DSP chain each configures)
-- [ ] whether the voice service requires DUA to be fully set up first, or
-      if we can use TDM grant + voice session directly
-- [ ] the exact response/callback message format for parsing DUA replies
-- [ ] what p_dua_InitReq (cmd 0x01) does vs p_dua_ApplInit (cmd 0x13)
-      and whether both are needed
+- [x] ~~exact command IDs~~ DONE — see [dua_protocol.md](dua_protocol.md)
+- [x] ~~UnitSetReq parameter IDs~~ DONE — see [dua_params_and_events.md](dua_params_and_events.md)
+- [x] ~~UMT mode values~~ DONE — all 8 SPVOIPNDA + 3 FXS modes decoded, see [umt_modes.md](umt_modes.md)
+- [x] ~~voice service + DUA dependency~~ CONFIRMED — voice requires DUA setup + BGSC running
+- [x] ~~DUA response/callback format~~ DONE — cmd=0x81 sync, cmd=0x7f async, see [dua_protocol.md](dua_protocol.md)
+- [x] ~~InitReq vs ApplInit~~ DONE — both required in order. InitReq sets up shared memory, ApplInit triggers CSS init
+- [ ] **BGSC element descriptor registration** — what `dfl_module_startup` writes
+      and which fields the CSS actually needs. see [codec_table_investigation.md](codec_table_investigation.md)
+- [ ] **module readiness cascade completion** — does RouteCODEC fire? see
+      [module_readiness_cascade.md](module_readiness_cascade.md)
 
 ### important but can discover at runtime
-- [ ] available unit elements per type (can use EnumUE cmd 0x7c)
+- [x] ~~unit elements per type~~ — 32 SPVOIPNDA elements confirmed on hardware
 - [ ] available params per unit element (can use EnumUEParam cmd 0x7d)
-- [ ] whether G.711 passthrough gives us raw 16-bit PCM or if we need to
-      ulaw/alaw decode on the linux side
+- [x] ~~G.711 passthrough~~ — ALL codecs go through AUC. no bypass. L16 is a no-op codec
+      but still requires the full BGSC infrastructure. see [voice_service_and_app_dsp.md](voice_service_and_app_dsp.md)
 
 ### nice to have
 - [x] ~~DTMF detection callback format~~ — DUAEV_DFC_DTMF_IND (0x1031)
 - [x] ~~conference/merge support~~ — ConnMerge cmd 0x08, ConnUnmerge cmd 0x09
 - [ ] hook state notification mechanism (probably via /dev/fxsXX TAPI)
-- [ ] detailed UMT (unit mode table) format for custom DSP pipeline definition
+- [x] ~~UMT format~~ DONE — see [umt_modes.md](umt_modes.md)
 
 ## alternative approach: TDM-only bypass
 
