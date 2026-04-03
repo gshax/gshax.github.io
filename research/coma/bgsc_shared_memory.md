@@ -504,12 +504,28 @@ POST_CALC_2 startup functions (called when bit 4 set during activation):
    — whether this exists as a separate channel or is the same as (a) is still
    unclear and needs investigation.
 
-### what to focus on next
+### what to focus on next (updated 2026-04-02 session 3)
 
-the audio silence is the remaining blocker. possible causes:
-1. CSS DSP pipeline audio routing not configured — check DUA setup vs stock
-2. missing element state that configures signal routing (e[0]+4=0x0e etc.)
-3. BG level state machine (I-switch setup) might configure routing on first session
-4. elem[22] dual-buffer issue — +4/+8 should differ but don't
-5. run stock app_dsp with our DUA init (--no-bgsc) to isolate BGSC vs DUA issue
-behavior.
+**key discovery:** TDM hardware registers and ISR counters are identical between
+stock and ours. the `optimized_tdm_handler` ISR is NOT involved in the voice
+audio path at all (counters zero even with stock producing real audio). the CSS
+level 0 dispatch handles all audio data movement directly.
+
+the silence has two remaining causes (both likely need fixing):
+
+1. **element descriptor registration:** our `module_startup` only writes a subset
+   of what stock's `dfl_module_startup` writes. the CSS level 0 calc functions
+   (SSW, SSR, SU2 signal routing) read configuration from element descriptors
+   to know how to route TDM audio to the encoder. see
+   [codec_table_investigation.md](codec_table_investigation.md).
+
+2. **ARM dispatch interfering with CSS level 0:** our dispatch iterates ALL 24
+   elements per group (from the element table at shm+0xb854). stock only
+   dispatches 20 per group (from the ARM FTAB, which excludes CSS-level-0
+   elements). our dispatch may clear control words that the CSS level 0 dispatch
+   set, corrupting CSS state machine processing. the `val & 0x1e` fix (session 3)
+   prevented I-switch bit clobbering but doesn't prevent general PENDING-bit
+   races on CSS elements.
+
+   fix: restrict ARM dispatch to elements with group_type 0x00010001 (level 1),
+   skipping 0x00040004 (level 0) and any without group_type set.

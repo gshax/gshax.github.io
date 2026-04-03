@@ -6,17 +6,15 @@
 analog phone ←→ SLIC chip                         ← TAPI ioctls (tapi_slic_control.md)
                    ↕
               TDM bus (hardware)                   ← tdm_grant activates (tdm_grant_investigation.md)
-                   ↕ tdm_read_sample() / tdm_write_sample()
-              optimized_tdm_handler()              ← CSS level 0 ISR context
-                   ↕ p_da_DSPFifoWrite() / p_da_DSPFifoRead()
-              DSP FIFOs                            ← created by FXS UMT mode 1 (umt_modes.md)
+                   ↕
+              CSS level 0 dispatch                 ← dfl_process_flow @ 0x020126e4 (css_level0_dispatch.md)
+              (signal routing via element          ← element descriptors configured by BGSC module_startup
+               descriptors in shared memory)
                    ↕
               DUA audio routing (ART)              ← RouteCODEC activates this (module_readiness_cascade.md)
                    ↕ signal blocks, codec pipeline
-              CSS level 0 dispatch                 ← dfl_process_flow @ 0x020126e4 (css_level0_dispatch.md)
-                   ↕ (for L16: CSS does all data movement, ARM codec funcs are noops)
               VoIP DSP pipeline (SPVOIPNDA unit)
-                   ↕
+                   ↕ (for L16: CSS does all data movement, ARM codec funcs are noops)
               COMA voice service                   ← voice_service_and_app_dsp.md
                    ↕ encoder/decoder CFIFOs (20KB each, DMA-coherent)
               /dev/voiceXX on Linux                ← kernel coma-voice.c chardev
@@ -24,16 +22,37 @@ analog phone ←→ SLIC chip                         ← TAPI ioctls (tapi_slic
               RTP stack (gs_ata / our code)
 ```
 
+**IMPORTANT correction (2026-04-02):** the `optimized_tdm_handler` ISR and its
+DSP FIFO write/read path documented below are NOT the mechanism used for the
+voice service audio path. TDM ISR sample counters are zero even with stock
+app_dsp producing real audio through /dev/voiceN. the TDM hardware is also
+identically configured between stock and our code (same registers, same values).
+
+the audio data movement between TDM hardware and the encoder input buffer
+happens entirely through the **CSS level 0 dispatch** — the same dfl_process_flow
+mechanism that runs on the ARM for levels 1-3. the CSS level 0 FTAB entries
+contain calc functions for signal routing (SSW, SSR, SU2) that read from TDM
+hardware and write to DSP buffers. these calc functions read configuration from
+**element descriptors in shared memory** — the same descriptors that the ARM's
+`dfl_module_startup` populates.
+
 **critical dependencies for audio to flow:**
 1. FXS UMT mode 1 must create DSP FIFOs (resolved 2026-03-31)
-2. BGSC must populate element descriptors so CSS level 0 knows how to route
-3. module readiness cascade must complete and trigger RouteCODEC
-4. RouteCODEC sets DRT global flags enabling TDM→encoder connection
-5. voice session must be started (SETCODEC ioctl on /dev/voiceN)
+2. module readiness cascade must complete and trigger RouteCODEC (resolved 2026-04-02)
+3. RouteCODEC sets DRT global flags at 0x09000000 = 0x01 (resolved 2026-04-02)
+4. BGSC must populate element descriptors so CSS level 0 dispatch knows how to
+   route audio — **THIS IS THE REMAINING BLOCKER**
+5. ARM dispatch must NOT interfere with CSS level 0 dispatch on shared elements
+6. voice session must be started (SETCODEC ioctl on /dev/voiceN)
 
 see [module_readiness_cascade.md](module_readiness_cascade.md) for the cascade
 chain and [codec_table_investigation.md](codec_table_investigation.md) for the
 element descriptor registration requirements.
+
+**the FXS-to-FXS intercom (dua_intercom) is a separate audio path** that works
+through DUA audio routing tables (ART) alone, bypassing the voice service and
+TDM ISR entirely. intercom audio is routed at the hardware/DRT level between
+FXS ports without ARM involvement.
 
 ## TDM layer (bottom)
 
@@ -69,10 +88,20 @@ activates a TDM bus:
 - validates channel count matches hardware config
 - stores rate, channels, sample_size in instance data
 - calls `tdm_enable(id, channels, sample_size)`
+- NOTE: does NOT call `tdm_enable_clock` — the CMU clock is managed separately
 
-### optimized_tdm_handler(p)
+### optimized_tdm_handler(p) — NOT used for voice audio path!
 
-the main audio pump loop, called periodically (likely from ISR context):
+**IMPORTANT (verified 2026-04-02):** this ISR's sample counters are zero even
+with stock app_dsp producing real audio. it is NOT the mechanism that moves
+audio between TDM hardware and the voice encoder. audio data movement for the
+voice service path happens through the CSS level 0 dispatch (dfl_process_flow)
+which uses signal routing calc functions (SSW, SSR, SU2) reading configuration
+from element descriptors in shared memory.
+
+the ISR is documented here for reference as it EXISTS in the firmware, but its
+role in the overall audio path is unclear — it may be used for a different audio
+mode or may be a fallback path that the DVF101 platform doesn't use.
 
 **RX path** (SLIC → DSP):
 ```
@@ -107,7 +136,10 @@ thin wrappers around `p_dsp_fifo_read()` / `p_dsp_fifo_write()`:
 - `p_da_DSPFifoRead(instance, data, samples)`
 - `p_da_DSPFifoWrite(instance, data, samples)`
 
-these FIFOs connect the TDM handler to the DSP processing pipeline.
+these FIFOs are referenced by TDM assignment (FIFO IDs like 0x080D) and by the
+CSS level 0 dispatch. the CSS level 0 calc functions access them via the
+`dfl_get_itab_entry` → `dfl_get_param_addr` parameter system, reading buffer
+pointers from element descriptors populated by `dfl_module_startup`.
 
 ## codec / audio routing layer
 

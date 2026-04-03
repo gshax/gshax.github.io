@@ -48,8 +48,19 @@ happens on CSS level 0. the ARM just:
 
 the CSS level 0 dispatch:
 - reads TDM audio from hardware
-- routes it through the DSP pipeline
+- routes it through the DSP pipeline (signal blocks: SSW, SSR, SU2)
 - writes encoded frames to the voice CFIFO
+
+**confirmed 2026-04-02:** TDM hardware registers and `optimized_tdm_handler`
+ISR counters are IDENTICAL between stock app_dsp (working audio) and our
+comatose_dsp (silence). the TDM ISR is NOT involved in the voice audio path
+at all — counters are zero even with stock producing real audio. the CSS level 0
+dispatch handles audio data movement directly, reading configuration from
+element descriptors in shared memory.
+
+**implication:** the silence is caused by CSS level 0 dispatch not having the
+correct configuration in element descriptors, and/or our ARM dispatch
+interfering with CSS level 0 dispatch on shared control words.
 
 ## why silence: CSS level 0 reads config from descriptors
 

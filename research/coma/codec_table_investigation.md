@@ -8,13 +8,27 @@ independent — the cascade may depend on descriptor data, and RouteCODEC may
 depend on both. see [css_level0_dispatch.md](css_level0_dispatch.md) for how
 the CSS uses descriptor data during audio routing.
 
-## the root cause of audio silence (one of two factors)
+## the root cause of audio silence
+
+**updated 2026-04-02:** verified on hardware that TDM hardware registers and
+ISR counters are identical between stock and ours. the cascade and RouteCODEC
+also work identically (DRT=0x01 in both cases). the silence is now confirmed
+to be **purely a CSS level 0 dispatch issue**: either element descriptors are
+missing data that the CSS calc functions need for signal routing, or our ARM
+dispatch is interfering with CSS level 0 dispatch on shared control words.
 
 `dfl_module_startup` (FUN_00075810, 36KB, 21 callees) writes extensively to
 element descriptors in shared memory during stock app_dsp's startup. these
 writes register codec modules by populating fields in each element descriptor
-beyond the control word. without this data, the CSS creates voice sessions
-and produces frames, but cannot route TDM audio through the encoder pipeline.
+beyond the control word. without this data, the CSS level 0 dispatch's signal
+routing functions (SSW, SSR, SU2) don't know how to route TDM audio to the
+encoder input buffer.
+
+**additionally**, our ARM dispatch currently iterates ALL elements including
+CSS-level-0 ones. stock app_dsp only dispatches ARM-level elements (levels 1-3).
+this means our dispatch may race with CSS level 0 dispatch on shared control
+words, corrupting the CSS state machine and preventing proper audio routing.
+both issues likely need to be fixed.
 
 **evidence:** diffing idle shared memory between stock app_dsp and our BGSC
 shows **2137 lines** of stock-specific non-zero data. the diff is saved on

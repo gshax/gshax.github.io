@@ -5,12 +5,13 @@ framework, and voice service. generated through static analysis of `_css.elf`
 (with DWARF symbols), `app_dsp`, `libcordless.so`, GPL kernel source, and
 extensive hardware testing on a netbooted alpine environment.
 
-**status as of 2026-04-02:** bidirectional audio works through the CSS DSP
-pipeline (confirmed 2026-03-31). voice sessions reach ST_RTP_RUN and produce
-frames, but the frames contain silence — TDM audio is not reaching the encoder.
-the remaining blocker is the BGSC↔CSS interaction: specifically, element
-descriptor registration and the module readiness cascade that triggers audio
-routing activation.
+**status as of 2026-04-02 (end of session 3):** cascade complete, RouteCODEC
+fires (DRT=0x01), VFD signal routing activation added, dispatch rewritten to
+role-based opt-in model. TDM ISR confirmed NOT involved in voice path. audio
+still silent. leading theory: ARM-side VFD FIFO initialization (done by stock
+libcordless.so's `vfd_init`) is the missing piece — CSS signal routing elements
+(SSW/SSR) live in CSS DTCM and are properly activated, but the shared memory
+FIFOs they read/write may not be configured.
 
 ## system architecture (how everything fits together)
 
@@ -108,6 +109,11 @@ these notes iterate on each other. read them in this order for the full picture:
 8. [codec_table_investigation.md](codec_table_investigation.md) — detailed
    analysis of what `dfl_module_startup` writes. 2137 lines of stock-specific
    data. identifies minimum viable registration hypothesis.
+
+9. [vfd_signal_routing.md](vfd_signal_routing.md) — **key discovery:** VFD
+   (voice/feed/data) signal routing activation via DUA elem=0x3b. CSS-side
+   SSW/SSR elements live in DTCM (invisible to ARM). ARM-side VFD FIFO
+   init in libcordless.so is the likely missing piece.
 
 ## hardware-validated findings
 

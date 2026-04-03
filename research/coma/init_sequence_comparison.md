@@ -159,13 +159,16 @@ possible failure modes:
 4. cascade reaches some stage but not RouteCODEC — need CSS trace to verify
 5. RouteCODEC fires but the DRT is misconfigured (missing element descriptor data)
 
-## what to investigate next
+## what to investigate next (updated 2026-04-02 session 3)
 
-1. **shm+0x04 pool size**: does changing to 0x80000 affect anything?
-2. **elem[0]+0x10**: what does 0x02 vs 0x01 mean? who writes it?
-3. **elem[12] full population**: write ALL stock ARM addresses to see
-   if any are needed for TDM routing
-4. **CSS text trace**: enable trace for the dsp/codec modules during
-   init to see if RouteCODEC fires
-5. **stock app_dsp trace**: run stock app_dsp with CSS trace enabled
-   to capture the exact init message sequence
+**resolved:** RouteCODEC fires (DRT=0x01). cascade completes. TDM hardware
+identical between stock and ours. the issue is purely CSS level 0 dispatch.
+
+1. **restrict ARM dispatch to ARM-level elements only** — check group_type
+   (0x00010001 for ARM, 0x00040004 for CSS) and skip CSS elements
+2. **trace CSS level 0 signal routing functions** (SSW, SSR, SU2) in ghidra
+   to find which element descriptor offsets they READ for audio routing config
+3. **compare element descriptors** between stock and ours for the signal
+   routing elements (using stock shm dumps on device)
+4. **elem[0]+0x10**: 0x02 vs 0x01 — still uninvestigated, may affect
+   CSS level 0 behavior
